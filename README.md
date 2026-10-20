@@ -1,4 +1,4 @@
-# filewheel
+# Daisy
 
 A radial file conversion wheel for Linux.
 
