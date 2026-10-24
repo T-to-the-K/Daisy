@@ -1,12 +1,29 @@
+import io
 import os
 import shutil
 import subprocess
 
 from PIL import Image
 
-IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".tiff", ".tif", ".bmp", ".gif"}
+
+def _image_exts():
+    exts = set()
+    for ext, fmt in Image.registered_extensions().items():
+        if fmt not in Image.SAVE or fmt not in Image.OPEN or fmt == "PDF":
+            continue
+        try:
+            probe = io.BytesIO()
+            Image.new("RGB", (2, 2)).save(probe, format=fmt)
+        except Exception:
+            continue
+        exts.add(ext)
+    return exts
+
+
+IMAGE_EXTS = _image_exts()
+LOSSY_FMTS = {"JPEG", "MPO", "JFIF", "WEBP"}
 AUDIO_EXTS = {".wav", ".mp3", ".ogg", ".flac", ".m4a", ".opus", ".aac", ".aiff"}
-TEXT_EXTS = {".txt", ".md", ".docx", ".odt", ".rtf", ".csv"}
+TEXT_EXTS = {".txt", ".md", ".docx", ".odt", ".rtf", ".csv", ".doc", ".xls", ".xlsx", ".ppt", ".pptx"}
 
 OPS = []
 
@@ -154,17 +171,54 @@ def pdf_to_text(paths):
     return made
 
 
+def _fmt_of(path):
+    return Image.registered_extensions().get(os.path.splitext(path)[1].lower())
+
+
+def _save(im, dst, fmt, **params):
+    try:
+        im.save(dst, format=fmt, **params)
+    except (TypeError, ValueError, OSError):
+        im.save(dst, format=fmt)
+
+
+def _load(path):
+    opened = Image.open(path)
+    opened.load()
+    return opened.copy(), opened
+
+
 def compress_image(paths):
     made = []
     for src in paths:
-        dst = output_path(src, "-compressed" + os.path.splitext(src)[1])
+        ext = os.path.splitext(src)[1].lower()
+        dst = output_path(src, "-compressed" + ext)
         original = os.path.getsize(src)
-        im = Image.open(src)
-        quality = 75
-        im.save(dst, quality=quality)
-        while os.path.getsize(dst) > original * 0.6 and quality > 30:
-            quality -= 10
-            im.save(dst, quality=quality)
+        fmt = _fmt_of(src)
+        im, opened = _load(src)
+        opened.close()
+        if fmt in LOSSY_FMTS:
+            quality = 85
+            _save(im, dst, fmt, quality=quality, optimize=True)
+            while os.path.getsize(dst) > original * 0.6 and quality > 25:
+                quality -= 10
+                _save(im, dst, fmt, quality=quality, optimize=True)
+        elif fmt in ("PNG", "APNG"):
+            _save(im, dst, fmt, optimize=True)
+            if os.path.getsize(dst) >= original:
+                try:
+                    if im.mode in ("RGBA", "LA", "P"):
+                        work = im.convert("RGBA")
+                        pal = work.quantize(colors=256, method=Image.Quantize.FASTOCTREE)
+                    else:
+                        pal = im.convert("RGB").quantize(colors=256)
+                    _save(pal, dst, fmt, optimize=True)
+                except Exception:
+                    pass
+        elif fmt == "TIFF":
+            _save(im, dst, fmt, compression="tiff_lzw")
+        else:
+            _save(im, dst, fmt, optimize=True)
         made.append(dst)
     return made
 
@@ -172,9 +226,15 @@ def compress_image(paths):
 def resize_image(paths):
     made = []
     for src in paths:
-        dst = output_path(src, "-small" + os.path.splitext(src)[1])
-        im = Image.open(src)
-        im.resize((im.width // 2, im.height // 2)).save(dst)
+        ext = os.path.splitext(src)[1].lower()
+        dst = output_path(src, "-small" + ext)
+        fmt = _fmt_of(src)
+        im, opened = _load(src)
+        opened.close()
+        small = im.resize(
+            (max(1, im.width // 2), max(1, im.height // 2)), Image.LANCZOS
+        )
+        _save(small, dst, fmt)
         made.append(dst)
     return made
 
@@ -182,8 +242,12 @@ def resize_image(paths):
 def rotate_image(paths):
     made = []
     for src in paths:
-        dst = output_path(src, "-rotated" + os.path.splitext(src)[1])
-        Image.open(src).rotate(90, expand=True).save(dst)
+        ext = os.path.splitext(src)[1].lower()
+        dst = output_path(src, "-rotated" + ext)
+        fmt = _fmt_of(src)
+        im, opened = _load(src)
+        opened.close()
+        _save(im.rotate(90, expand=True), dst, fmt)
         made.append(dst)
     return made
 
@@ -191,11 +255,27 @@ def rotate_image(paths):
 def strip_meta(paths):
     made = []
     for src in paths:
-        dst = output_path(src, "-clean" + os.path.splitext(src)[1])
-        im = Image.open(src)
+        ext = os.path.splitext(src)[1].lower()
+        dst = output_path(src, "-clean" + ext)
+        fmt = _fmt_of(src)
+        im, opened = _load(src)
+        keep = {
+            key: value
+            for key, value in opened.info.items()
+            if key in ("transparency", "duration", "loop", "background", "disposal")
+        }
+        opened.close()
         clean = Image.new(im.mode, im.size)
-        clean.putdata(list(im.getdata()))
-        clean.save(dst)
+        if im.mode == "P":
+            clean.putpalette(im.getpalette())
+        clean.paste(im)
+        clean.info = keep
+        if fmt in LOSSY_FMTS:
+            _save(clean, dst, fmt, quality=95)
+        elif fmt in ("PNG", "APNG"):
+            _save(clean, dst, fmt, optimize=True)
+        else:
+            _save(clean, dst, fmt)
         made.append(dst)
     return made
 
@@ -269,6 +349,78 @@ def reveal_file(paths):
     return []
 
 
+def compress_pdf(paths):
+    made = []
+    for src in paths:
+        dst = output_path(src, "-compressed.pdf")
+        # Try ghostscript for compression
+        subprocess.run(
+            [
+                "gs",
+                "-sDEVICE=pdfwrite",
+                "-dCompatibilityLevel=1.4",
+                "-dPDFSETTINGS=/ebook",
+                "-dNOPAUSE",
+                "-dQUIET",
+                "-dBATCH",
+                "-sOutputFile=" + dst,
+                src,
+            ],
+            check=True,
+            capture_output=True,
+            timeout=300,
+        )
+        made.append(dst)
+    return made
+
+
+def compress_office(paths):
+    made = []
+    # For office formats, convert to PDF then compress
+    for src in paths:
+        ext = os.path.splitext(src)[1].lower()
+        # First convert to pdf
+        workdir = os.path.dirname(src)
+        subprocess.run(
+            [
+                "libreoffice",
+                "--headless",
+                "--convert-to",
+                "pdf",
+                "--outdir",
+                workdir,
+                src,
+            ],
+            check=True,
+            capture_output=True,
+            timeout=300,
+        )
+        pdf_path = os.path.join(workdir, os.path.splitext(os.path.basename(src))[0] + ".pdf")
+        dst = output_path(src, "-compressed.pdf")
+        subprocess.run(
+            [
+                "gs",
+                "-sDEVICE=pdfwrite",
+                "-dCompatibilityLevel=1.4",
+                "-dPDFSETTINGS=/ebook",
+                "-dNOPAUSE",
+                "-dQUIET",
+                "-dBATCH",
+                "-sOutputFile=" + dst,
+                pdf_path,
+            ],
+            check=True,
+            capture_output=True,
+            timeout=300,
+        )
+        try:
+            os.remove(pdf_path)
+        except Exception:
+            pass
+        made.append(dst)
+    return made
+
+
 def build():
     OPS.clear()
     for target in ("png", "jpg", "webp", "tiff", "bmp", "gif"):
@@ -279,19 +431,23 @@ def build():
     op("TXT", "convert", lambda p: all_in(p, {".pdf"}), pdf_to_text)
     for target in ("mp3", "ogg", "flac", "m4a", "wav"):
         op(target.upper(), "convert", lambda p, t=target: all_in(p, AUDIO_EXTS), _gst_audio(target))
-    for target in ("pdf", "docx", "txt"):
+    for target in ("pdf", "docx", "doc", "txt", "odt", "rtf", "xls", "xlsx", "ppt", "pptx"):
         op(
             target.upper(),
             "convert",
-            lambda p, t=target: all_in(p, TEXT_EXTS),
+            lambda p, t=target: all_in(p, TEXT_EXTS | {".pdf", ".doc", ".xls", ".xlsx", ".ppt", ".pptx"}),
             _libreoffice(target),
         )
     op("ZIP", "convert", lambda p: len(p) > 0, lambda p: make_archive(p, "zip"))
     op("TGZ", "convert", lambda p: len(p) > 0, lambda p: make_archive(p, "tgz"))
+    # Image tools for all images
     op("Compress", "tool", lambda p: all_in(p, IMAGE_EXTS), compress_image)
     op("Resize", "tool", lambda p: all_in(p, IMAGE_EXTS), resize_image)
     op("Rotate", "tool", lambda p: all_in(p, IMAGE_EXTS), rotate_image)
     op("Strip meta", "tool", lambda p: all_in(p, IMAGE_EXTS), strip_meta)
+    # PDF/Office compression
+    op("Compress", "tool", lambda p: all_in(p, {".pdf"}), compress_pdf)
+    op("Compress", "tool", lambda p: all_in(p, {".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".odt"}), compress_office)
     op("Path", "action", lambda p: True, copy_path)
     op("Copy", "action", lambda p: True, duplicate_file)
     op("Open", "action", lambda p: True, open_file)
@@ -303,7 +459,9 @@ def build():
 def ops_for(kind, paths=None):
     found = [o for o in OPS if o["kind"] == kind]
     if paths:
-        found = [o for o in found if o["applies"](paths)]
+        applicable = [o for o in found if o["applies"](paths)]
+        if applicable:
+            found = applicable
         if kind == "convert":
             exts = set(exts_of(paths))
             found = [
@@ -318,7 +476,9 @@ def ops_for(kind, paths=None):
         if entry["label"] in seen:
             continue
         seen.add(entry["label"])
-        unique.append(entry)
+        item = dict(entry)
+        item["enabled"] = bool(paths) and entry["applies"](paths)
+        unique.append(item)
     return unique
 
 
