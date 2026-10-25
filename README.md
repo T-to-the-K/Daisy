@@ -13,13 +13,13 @@ Clone the repo and run the installer — it installs all dependencies, registers
 autostart, and launches the wheel:
 
 ```bash
-git clone https://github.com/T-to-the-K/Daisy.git && cd Daisy && ./install.sh
+git clone https://github.com/T-to-the-K/Daisy.git && cd Daisy && bash install.sh
 ```
 
 Already cloned? Just:
 
 ```bash
-cd Daisy && ./install.sh
+cd Daisy && bash install.sh
 ```
 
 That's it. Press **Ctrl+Alt+W** (or drag a file and hold **Shift**) to summon
@@ -36,7 +36,7 @@ the wheel.
   `python3-pil`, `gstreamer1.0-tools` (+ good/bad/ugly/libav plugins),
   `libreoffice`, `ghostscript`, `poppler-utils`, `zip`, `xclip`,
   `libnotify-bin`.
-- Run manually any time: `./run.sh`. Logs go to `/tmp/filewheel.log`.
+- Run manually any time: `bash run.sh`. Logs go to `/tmp/filewheel.log`.
 
 ## How it works
 
