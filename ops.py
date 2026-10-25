@@ -1,7 +1,11 @@
 import io
 import os
+import re
 import shutil
 import subprocess
+import tarfile
+import tempfile
+import zipfile
 
 from PIL import Image
 
@@ -23,7 +27,9 @@ def _image_exts():
 IMAGE_EXTS = _image_exts()
 LOSSY_FMTS = {"JPEG", "MPO", "JFIF", "WEBP"}
 AUDIO_EXTS = {".wav", ".mp3", ".ogg", ".flac", ".m4a", ".opus", ".aac", ".aiff"}
-TEXT_EXTS = {".txt", ".md", ".docx", ".odt", ".rtf", ".csv", ".doc", ".xls", ".xlsx", ".ppt", ".pptx"}
+WRITER_EXTS = {".txt", ".md", ".docx", ".odt", ".rtf", ".doc"}
+CALC_EXTS = {".csv", ".xls", ".xlsx"}
+IMPRESS_EXTS = {".ppt", ".pptx"}
 
 OPS = []
 
@@ -124,23 +130,33 @@ def _libreoffice(target):
     def run(paths):
         made = []
         for src in paths:
+            src_ext = os.path.splitext(src)[1].lower()
+            if src_ext == "." + target:
+                raise RuntimeError("%s is already a %s file" % (os.path.basename(src), target.upper()))
             dst = output_path(src, "." + target)
-            workdir = os.path.dirname(dst) or "."
-            command = ["libreoffice", "--headless"]
-            if os.path.splitext(src)[1].lower() == ".pdf":
-                command.append("--infilter=writer_pdf_import")
-            command += ["--convert-to", target, "--outdir", workdir, src]
-            subprocess.run(command, check=True, capture_output=True, timeout=180)
-            produced = os.path.join(
-                workdir, os.path.splitext(os.path.basename(src))[0] + "." + target
-            )
-            if not os.path.exists(produced) or os.path.getsize(produced) == 0:
-                raise RuntimeError(
-                    "LibreOffice could not create a %s copy of %s"
-                    % (target.upper(), os.path.basename(src))
-                )
-            if produced != dst:
-                os.replace(produced, dst)
+            base = os.path.splitext(os.path.basename(src))[0]
+            workdir = tempfile.mkdtemp(prefix="daisy-lo-")
+            try:
+                command = ["libreoffice", "--headless"]
+                if src_ext == ".pdf":
+                    command.append("--infilter=writer_pdf_import")
+                command += [
+                    "--convert-to",
+                    target,
+                    "--outdir",
+                    workdir,
+                    os.path.abspath(src),
+                ]
+                subprocess.run(command, check=True, capture_output=True, timeout=180)
+                produced = os.path.join(workdir, base + "." + target)
+                if not os.path.exists(produced) or os.path.getsize(produced) == 0:
+                    raise RuntimeError(
+                        "LibreOffice could not create a %s copy of %s"
+                        % (target.upper(), os.path.basename(src))
+                    )
+                shutil.move(produced, dst)
+            finally:
+                shutil.rmtree(workdir, ignore_errors=True)
             made.append(dst)
         return made
 
@@ -157,18 +173,40 @@ def images_to_pdf(paths):
 def pdf_to_pages(paths, fmt):
     made = []
     for src in paths:
-        prefix = output_path(src, "").rstrip(".") + "-page"
-        args = ["pdftoppm", "-" + ("png" if fmt == "png" else "jpeg"), "-r", "150", src, prefix]
-        subprocess.run(args, check=True, capture_output=True, timeout=120)
-        pages = sorted(
-            p for p in os.listdir(os.path.dirname(src) or ".") if p.startswith(os.path.basename(prefix))
+        stem = os.path.join(
+            os.path.dirname(src) or ".",
+            os.path.splitext(os.path.basename(src))[0] + "-page",
         )
-        for page in pages:
-            full = os.path.join(os.path.dirname(src) or ".", page)
-            dst = full if page.endswith("." + fmt) else full + "." + fmt
-            if full != dst:
-                os.replace(full, dst)
-            made.append(dst)
+        tmpdir = tempfile.mkdtemp(prefix="daisy-pdf-")
+        try:
+            args = [
+                "pdftoppm",
+                "-" + ("png" if fmt == "png" else "jpeg"),
+                "-r",
+                "150",
+                src,
+                os.path.join(tmpdir, "page"),
+            ]
+            subprocess.run(args, check=True, capture_output=True, timeout=120)
+            pages = [
+                p
+                for p in os.listdir(tmpdir)
+                if re.match(r"page-\d+\.(png|jpe?g)$", p, re.IGNORECASE)
+            ]
+            if not pages:
+                raise RuntimeError("Could not render any pages of %s" % os.path.basename(src))
+            pages.sort(key=lambda p: int(re.search(r"-(\d+)\.", p).group(1)))
+            for page in pages:
+                index = int(re.search(r"-(\d+)\.", page).group(1))
+                dst = "%s-%d.%s" % (stem, index, fmt)
+                counter = 2
+                while os.path.exists(dst):
+                    dst = "%s-%d-%d.%s" % (stem, index, counter, fmt)
+                    counter += 1
+                shutil.move(os.path.join(tmpdir, page), dst)
+                made.append(dst)
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
     return made
 
 
@@ -186,10 +224,13 @@ def _fmt_of(path):
 
 
 def _save(im, dst, fmt, **params):
+    if fmt == "ICO":
+        params.setdefault("sizes", [im.size])
     try:
         im.save(dst, format=fmt, **params)
     except (TypeError, ValueError, OSError):
-        im.save(dst, format=fmt)
+        fallback = {"sizes": params["sizes"]} if "sizes" in params else {}
+        im.save(dst, format=fmt, **fallback)
 
 
 def _load(path):
@@ -307,16 +348,28 @@ def make_archive(paths, kind):
     while os.path.exists(candidate):
         candidate = "%s-%d%s" % (base, counter, ext)
         counter += 1
+
+    used = set()
+
+    def arcname(path):
+        name = os.path.basename(path)
+        stem, suffix = os.path.splitext(name)
+        candidate_name = name
+        n = 2
+        while candidate_name in used:
+            candidate_name = "%s (%d)%s" % (stem, n, suffix)
+            n += 1
+        used.add(candidate_name)
+        return candidate_name
+
     if kind == "zip":
-        subprocess.run(["zip", "-j", candidate] + paths, check=True, capture_output=True, timeout=300)
+        with zipfile.ZipFile(candidate, "w", zipfile.ZIP_DEFLATED) as archive:
+            for path in paths:
+                archive.write(path, arcname(path))
     else:
-        subprocess.run(
-            ["tar", "-czf", candidate, "-C", folder]
-            + [os.path.basename(p) for p in paths],
-            check=True,
-            capture_output=True,
-            timeout=300,
-        )
+        with tarfile.open(candidate, "w:gz") as archive:
+            for path in paths:
+                archive.add(path, arcname=arcname(path))
     return [candidate]
 
 
@@ -402,45 +455,49 @@ def compress_office(paths, level=None):
     made = []
     # For office formats, convert to PDF then compress
     for src in paths:
-        ext = os.path.splitext(src)[1].lower()
-        # First convert to pdf
-        workdir = os.path.dirname(src)
-        subprocess.run(
-            [
-                "libreoffice",
-                "--headless",
-                "--convert-to",
-                "pdf",
-                "--outdir",
-                workdir,
-                src,
-            ],
-            check=True,
-            capture_output=True,
-            timeout=300,
-        )
-        pdf_path = os.path.join(workdir, os.path.splitext(os.path.basename(src))[0] + ".pdf")
-        dst = output_path(src, "-compressed.pdf")
-        subprocess.run(
-            [
-                "gs",
-                "-sDEVICE=pdfwrite",
-                "-dCompatibilityLevel=1.4",
-                "-dPDFSETTINGS=" + _pdf_preset(level),
-                "-dNOPAUSE",
-                "-dQUIET",
-                "-dBATCH",
-                "-sOutputFile=" + dst,
-                pdf_path,
-            ],
-            check=True,
-            capture_output=True,
-            timeout=300,
-        )
+        tmpdir = tempfile.mkdtemp(prefix="daisy-office-")
         try:
-            os.remove(pdf_path)
-        except Exception:
-            pass
+            subprocess.run(
+                [
+                    "libreoffice",
+                    "--headless",
+                    "--convert-to",
+                    "pdf",
+                    "--outdir",
+                    tmpdir,
+                    os.path.abspath(src),
+                ],
+                check=True,
+                capture_output=True,
+                timeout=300,
+            )
+            pdf_path = os.path.join(
+                tmpdir, os.path.splitext(os.path.basename(src))[0] + ".pdf"
+            )
+            if not os.path.exists(pdf_path) or os.path.getsize(pdf_path) == 0:
+                raise RuntimeError(
+                    "LibreOffice could not create a PDF copy of %s"
+                    % os.path.basename(src)
+                )
+            dst = output_path(src, "-compressed.pdf")
+            subprocess.run(
+                [
+                    "gs",
+                    "-sDEVICE=pdfwrite",
+                    "-dCompatibilityLevel=1.4",
+                    "-dPDFSETTINGS=" + _pdf_preset(level),
+                    "-dNOPAUSE",
+                    "-dQUIET",
+                    "-dBATCH",
+                    "-sOutputFile=" + dst,
+                    pdf_path,
+                ],
+                check=True,
+                capture_output=True,
+                timeout=300,
+            )
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
         made.append(dst)
     return made
 
@@ -459,14 +516,21 @@ def build():
         op(
             target.upper(),
             "convert",
-            lambda p, t=target: all_in(p, TEXT_EXTS | {".pdf", ".doc"}),
+            lambda p, t=target: all_in(p, WRITER_EXTS | {".pdf"}),
             _libreoffice(target),
         )
-    for target in ("xls", "xlsx", "ppt", "pptx"):
+    for target in ("pdf", "xls", "xlsx", "csv"):
         op(
             target.upper(),
             "convert",
-            lambda p, t=target: all_in(p, TEXT_EXTS | {".xls", ".xlsx", ".ppt", ".pptx"}),
+            lambda p, t=target: all_in(p, CALC_EXTS),
+            _libreoffice(target),
+        )
+    for target in ("pdf", "ppt", "pptx"):
+        op(
+            target.upper(),
+            "convert",
+            lambda p, t=target: all_in(p, IMPRESS_EXTS),
             _libreoffice(target),
         )
     op("ZIP", "convert", lambda p: len(p) > 0, lambda p: make_archive(p, "zip"))
@@ -509,7 +573,7 @@ def ops_for(kind, paths=None):
                 o
                 for o in found
                 if ("." + o["label"].lower()) not in exts
-                or o["label"] in ("PDF", "ZIP", "TGZ")
+                or o["label"] in ("ZIP", "TGZ")
             ]
     seen = set()
     unique = []
