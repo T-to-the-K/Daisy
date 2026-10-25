@@ -26,6 +26,7 @@ class FileWheel:
         self.button_down = False
         self.press_at = (0, 0)
         self.dragging = False
+        self.slider_live = False
         self.pointer = (0, 0)
         self.wheel_kind = None
         self.wheel = WheelWindow(self._on_pick, self._on_paths)
@@ -61,10 +62,17 @@ class FileWheel:
             self.button_down = True
             self.press_at = (args[0], args[1])
             self.dragging = False
+            if self.wheel.get_visible() and self.wheel.slider_hit(*self.press_at):
+                self.slider_live = True
+                self.wheel.slider_begin(*self.press_at)
         elif kind == "motion":
             x, y = args
             self.pointer = (x, y)
-            if self.button_down and not self.dragging:
+            if self.slider_live:
+                self.wheel.slider_set(x, y)
+            elif self.wheel.get_visible():
+                self.wheel.ring_hover(x, y)
+            if self.button_down and not self.dragging and not self.slider_live:
                 dx = x - self.press_at[0]
                 dy = y - self.press_at[1]
                 if (dx * dx + dy * dy) ** 0.5 > DRAG_THRESHOLD:
@@ -74,12 +82,33 @@ class FileWheel:
             if self.wheel.get_visible():
                 self.wheel.page_by(delta)
         elif kind == "release":
+            x, y = args[0], args[1]
+            if self.slider_live:
+                self.slider_live = False
+                self.wheel.slider_set(x, y)
+                self.wheel.slider_end()
+                self.button_down = False
+                self.dragging = False
+                print(
+                    "compression=%.2f" % self.wheel.compression,
+                    flush=True,
+                )
+                if self.wheel.mode == "level":
+                    self._finish_level()
+                return False
             was_dragging = self.dragging
             self.button_down = False
             self.dragging = False
+            if self.wheel.get_visible() and self.wheel.mode == "level":
+                return False
             if was_dragging and self.wheel.get_visible():
-                self.wheel.commit()
-                self._hide_wheel()
+                if not self.wheel.commit():
+                    self._hide_wheel()
+            elif not was_dragging and self.wheel.get_visible():
+                index = self.wheel.wedge_at(x, y)
+                if index >= 0:
+                    self.wheel.hover = index
+                    self.wheel.commit()
             elif was_dragging:
                 self._hide_wheel()
         elif kind == "key":
@@ -103,12 +132,16 @@ class FileWheel:
         GLib.timeout_add(45000, self._watchdog)
 
     def _watchdog(self):
+        if self.wheel.mode == "level" and self.wheel.get_visible():
+            return True
         if self.wheel.get_visible() and not self.button_down:
             self._hide_wheel()
         return False
 
     def _hide_wheel(self):
         self.wheel_kind = None
+        if self.wheel.mode == "level":
+            self.wheel.cancel_level()
         if self.wheel.get_visible():
             self.wheel.hide()
 
@@ -120,14 +153,29 @@ class FileWheel:
             self.wheel.set_entries(entries)
 
     def _on_pick(self, entry, paths):
+        if entry.get("leveled"):
+            self.wheel.prompt_level(entry, paths)
+            return
         self._hide_wheel()
         threading.Thread(
-            target=self._run_job, args=(entry, paths), daemon=True
+            target=self._run_job, args=(entry, paths, None), daemon=True
         ).start()
 
-    def _run_job(self, entry, paths):
+    def _finish_level(self):
+        pending = self.wheel.pending
+        level = self.wheel.compression
+        self.wheel.cancel_level()
+        self._hide_wheel()
+        if not pending:
+            return
+        entry, paths = pending
+        threading.Thread(
+            target=self._run_job, args=(entry, paths, level), daemon=True
+        ).start()
+
+    def _run_job(self, entry, paths, level=None):
         try:
-            made = ops.run_op(entry, paths)
+            made = ops.run_op(entry, paths, level)
         except Exception as error:
             notify("FileWheel", "%s failed: %s" % (entry["label"], error))
             return

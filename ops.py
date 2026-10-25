@@ -28,8 +28,22 @@ TEXT_EXTS = {".txt", ".md", ".docx", ".odt", ".rtf", ".csv", ".doc", ".xls", ".x
 OPS = []
 
 
-def op(label, kind, applies, run):
-    OPS.append({"label": label, "kind": kind, "applies": applies, "run": run})
+def op(label, kind, applies, run, leveled=False):
+    OPS.append(
+        {
+            "label": label,
+            "kind": kind,
+            "applies": applies,
+            "run": run,
+            "leveled": leveled,
+        }
+    )
+
+
+def _level(level):
+    if level is None:
+        return 0.5
+    return max(0.0, min(1.0, float(level)))
 
 
 def output_path(src, ext):
@@ -111,25 +125,21 @@ def _libreoffice(target):
         made = []
         for src in paths:
             dst = output_path(src, "." + target)
-            workdir = os.path.dirname(dst)
-            subprocess.run(
-                [
-                    "libreoffice",
-                    "--headless",
-                    "--convert-to",
-                    target,
-                    "--outdir",
-                    workdir,
-                    src,
-                ],
-                check=True,
-                capture_output=True,
-                timeout=180,
-            )
+            workdir = os.path.dirname(dst) or "."
+            command = ["libreoffice", "--headless"]
+            if os.path.splitext(src)[1].lower() == ".pdf":
+                command.append("--infilter=writer_pdf_import")
+            command += ["--convert-to", target, "--outdir", workdir, src]
+            subprocess.run(command, check=True, capture_output=True, timeout=180)
             produced = os.path.join(
                 workdir, os.path.splitext(os.path.basename(src))[0] + "." + target
             )
-            if produced != dst and os.path.exists(produced):
+            if not os.path.exists(produced) or os.path.getsize(produced) == 0:
+                raise RuntimeError(
+                    "LibreOffice could not create a %s copy of %s"
+                    % (target.upper(), os.path.basename(src))
+                )
+            if produced != dst:
                 os.replace(produced, dst)
             made.append(dst)
         return made
@@ -188,7 +198,8 @@ def _load(path):
     return opened.copy(), opened
 
 
-def compress_image(paths):
+def compress_image(paths, level=None):
+    level = _level(level)
     made = []
     for src in paths:
         ext = os.path.splitext(src)[1].lower()
@@ -198,20 +209,22 @@ def compress_image(paths):
         im, opened = _load(src)
         opened.close()
         if fmt in LOSSY_FMTS:
-            quality = 85
+            quality = int(round(92 - 64 * level))
+            ratio = 0.90 - 0.55 * level
             _save(im, dst, fmt, quality=quality, optimize=True)
-            while os.path.getsize(dst) > original * 0.6 and quality > 25:
-                quality -= 10
+            while os.path.getsize(dst) > original * ratio and quality > 25:
+                quality -= 5
                 _save(im, dst, fmt, quality=quality, optimize=True)
         elif fmt in ("PNG", "APNG"):
             _save(im, dst, fmt, optimize=True)
-            if os.path.getsize(dst) >= original:
+            if level >= 0.5 or os.path.getsize(dst) >= original:
                 try:
+                    colors = max(32, int(round(256 - 200 * level)))
                     if im.mode in ("RGBA", "LA", "P"):
                         work = im.convert("RGBA")
-                        pal = work.quantize(colors=256, method=Image.Quantize.FASTOCTREE)
+                        pal = work.quantize(colors=colors, method=Image.Quantize.FASTOCTREE)
                     else:
-                        pal = im.convert("RGB").quantize(colors=256)
+                        pal = im.convert("RGB").quantize(colors=colors)
                     _save(pal, dst, fmt, optimize=True)
                 except Exception:
                     pass
@@ -349,7 +362,18 @@ def reveal_file(paths):
     return []
 
 
-def compress_pdf(paths):
+def _pdf_preset(level):
+    level = _level(level)
+    if level < 0.2:
+        return "/prepress"
+    if level < 0.45:
+        return "/printer"
+    if level < 0.75:
+        return "/ebook"
+    return "/screen"
+
+
+def compress_pdf(paths, level=None):
     made = []
     for src in paths:
         dst = output_path(src, "-compressed.pdf")
@@ -359,7 +383,7 @@ def compress_pdf(paths):
                 "gs",
                 "-sDEVICE=pdfwrite",
                 "-dCompatibilityLevel=1.4",
-                "-dPDFSETTINGS=/ebook",
+                "-dPDFSETTINGS=" + _pdf_preset(level),
                 "-dNOPAUSE",
                 "-dQUIET",
                 "-dBATCH",
@@ -374,7 +398,7 @@ def compress_pdf(paths):
     return made
 
 
-def compress_office(paths):
+def compress_office(paths, level=None):
     made = []
     # For office formats, convert to PDF then compress
     for src in paths:
@@ -402,7 +426,7 @@ def compress_office(paths):
                 "gs",
                 "-sDEVICE=pdfwrite",
                 "-dCompatibilityLevel=1.4",
-                "-dPDFSETTINGS=/ebook",
+                "-dPDFSETTINGS=" + _pdf_preset(level),
                 "-dNOPAUSE",
                 "-dQUIET",
                 "-dBATCH",
@@ -431,23 +455,36 @@ def build():
     op("TXT", "convert", lambda p: all_in(p, {".pdf"}), pdf_to_text)
     for target in ("mp3", "ogg", "flac", "m4a", "wav"):
         op(target.upper(), "convert", lambda p, t=target: all_in(p, AUDIO_EXTS), _gst_audio(target))
-    for target in ("pdf", "docx", "doc", "txt", "odt", "rtf", "xls", "xlsx", "ppt", "pptx"):
+    for target in ("pdf", "docx", "doc", "txt", "odt", "rtf"):
         op(
             target.upper(),
             "convert",
-            lambda p, t=target: all_in(p, TEXT_EXTS | {".pdf", ".doc", ".xls", ".xlsx", ".ppt", ".pptx"}),
+            lambda p, t=target: all_in(p, TEXT_EXTS | {".pdf", ".doc"}),
+            _libreoffice(target),
+        )
+    for target in ("xls", "xlsx", "ppt", "pptx"):
+        op(
+            target.upper(),
+            "convert",
+            lambda p, t=target: all_in(p, TEXT_EXTS | {".xls", ".xlsx", ".ppt", ".pptx"}),
             _libreoffice(target),
         )
     op("ZIP", "convert", lambda p: len(p) > 0, lambda p: make_archive(p, "zip"))
     op("TGZ", "convert", lambda p: len(p) > 0, lambda p: make_archive(p, "tgz"))
     # Image tools for all images
-    op("Compress", "tool", lambda p: all_in(p, IMAGE_EXTS), compress_image)
+    op("Compress", "tool", lambda p: all_in(p, IMAGE_EXTS), compress_image, leveled=True)
     op("Resize", "tool", lambda p: all_in(p, IMAGE_EXTS), resize_image)
     op("Rotate", "tool", lambda p: all_in(p, IMAGE_EXTS), rotate_image)
-    op("Strip meta", "tool", lambda p: all_in(p, IMAGE_EXTS), strip_meta)
+    op("Strip", "tool", lambda p: all_in(p, IMAGE_EXTS), strip_meta)
     # PDF/Office compression
-    op("Compress", "tool", lambda p: all_in(p, {".pdf"}), compress_pdf)
-    op("Compress", "tool", lambda p: all_in(p, {".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".odt"}), compress_office)
+    op("Compress", "tool", lambda p: all_in(p, {".pdf"}), compress_pdf, leveled=True)
+    op(
+        "Compress",
+        "tool",
+        lambda p: all_in(p, {".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".odt"}),
+        compress_office,
+        leveled=True,
+    )
     op("Path", "action", lambda p: True, copy_path)
     op("Copy", "action", lambda p: True, duplicate_file)
     op("Open", "action", lambda p: True, open_file)
@@ -482,9 +519,11 @@ def ops_for(kind, paths=None):
     return unique
 
 
-def run_op(entry, paths):
+def run_op(entry, paths, level=None):
     matches = [o for o in OPS if o["label"] == entry["label"] and o["kind"] == entry["kind"]]
     for match in matches:
         if match["applies"](paths):
+            if match.get("leveled"):
+                return match["run"](paths, level)
             return match["run"](paths)
     raise ValueError("%s does not work on these files" % entry["label"])

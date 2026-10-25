@@ -1,4 +1,5 @@
 import threading
+import time
 
 from Xlib import X, display
 from Xlib.ext import record
@@ -13,6 +14,7 @@ class HotkeyGrab(threading.Thread):
         self.modifiers = modifiers
         self.callback = callback
         self._display = None
+        self._last_fire = 0.0
 
     def run(self):
         self._display = display.Display()
@@ -37,6 +39,10 @@ class HotkeyGrab(threading.Thread):
                 print("hotkey loop died:", error, flush=True)
                 return
             if event.type == X.KeyPress:
+                now = time.monotonic()
+                if now - self._last_fire < 0.35:
+                    continue
+                self._last_fire = now
                 print("hotkey fired", flush=True)
                 self.callback()
 
