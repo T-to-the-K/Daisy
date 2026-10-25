@@ -496,7 +496,11 @@ def build():
 def ops_for(kind, paths=None):
     found = [o for o in OPS if o["kind"] == kind]
     if paths:
-        applicable = [o for o in found if o["applies"](paths)]
+        applicable = [
+            o
+            for o in found
+            if any(o["applies"]([path]) for path in paths)
+        ]
         if applicable:
             found = applicable
         if kind == "convert":

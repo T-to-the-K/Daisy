@@ -153,6 +153,25 @@ class FileWheel:
             self.wheel.set_entries(entries)
 
     def _on_pick(self, entry, paths):
+        if paths and not entry["applies"](paths):
+            bad = []
+            for path in paths:
+                if not entry["applies"]([path]):
+                    ext = os.path.splitext(path)[1].lower()
+                    bad.append(ext if ext else "unknown")
+            kinds = sorted(set(bad))
+            if len(kinds) == 1:
+                formats = kinds[0]
+            elif len(kinds) == 2:
+                formats = "%s and %s" % (kinds[0], kinds[1])
+            else:
+                formats = ", ".join(kinds[:-1]) + " and " + kinds[-1]
+            self._hide_wheel()
+            notify(
+                "%s skipped" % entry["label"],
+                "Not supported for %s files" % formats,
+            )
+            return
         if entry.get("leveled"):
             self.wheel.prompt_level(entry, paths)
             return
