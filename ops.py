@@ -365,7 +365,23 @@ def make_archive(paths, kind):
     if kind == "zip":
         with zipfile.ZipFile(candidate, "w", zipfile.ZIP_DEFLATED) as archive:
             for path in paths:
-                archive.write(path, arcname(path))
+                if not os.path.isdir(path):
+                    archive.write(path, arcname(path))
+                    continue
+                root_name = arcname(path)
+                for folder, folders, files in os.walk(path):
+                    folders.sort()
+                    files.sort()
+                    relative = os.path.relpath(folder, path)
+                    if relative == ".":
+                        folder_name = root_name
+                    else:
+                        folder_name = os.path.join(root_name, relative)
+                    if not folders and not files:
+                        archive.write(folder, folder_name)
+                    for filename in files:
+                        full = os.path.join(folder, filename)
+                        archive.write(full, os.path.join(folder_name, filename))
     else:
         with tarfile.open(candidate, "w:gz") as archive:
             for path in paths:
