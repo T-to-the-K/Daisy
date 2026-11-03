@@ -5,6 +5,15 @@ All notable changes to Daisy are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- Same-format aliases (`.jpeg`, `.tif`, `.apng`) are no longer offered as conversion targets.
+- Archiving or duplicating a folder with a trailing slash no longer creates a hidden `.zip` or an empty copy name.
+- Duplicating a folder now copies its contents instead of failing.
+- Image conversions and tools preserve animation frames instead of keeping only the first.
+- Term and Reveal open a dragged folder itself rather than its parent directory.
+
 ## [1.0.0] - 2026-11-02
 
 ### Added

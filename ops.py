@@ -52,6 +52,20 @@ def _level(level):
     return max(0.0, min(1.0, float(level)))
 
 
+EXT_ALIASES = {
+    ".apng": ".png",
+    ".jpeg": ".jpg",
+    ".jpe": ".jpg",
+    ".jfif": ".jpg",
+    ".tif": ".tiff",
+    ".dib": ".bmp",
+}
+
+
+def _canonical_ext(ext):
+    return EXT_ALIASES.get(ext, ext)
+
+
 def output_path(src, ext):
     base = os.path.splitext(src)[0]
     candidate = base + ext
@@ -75,19 +89,33 @@ def _convert_image(target):
         made = []
         for src in paths:
             dst = output_path(src, "." + target)
-            im = Image.open(src)
+            with Image.open(src) as im:
+                frames, durations, loop = _frames_of(im)
             if target == "jpg":
-                im.convert("RGB").save(dst, "JPEG", quality=92)
-            elif target == "png":
-                im.save(dst, "PNG")
-            elif target == "webp":
-                im.save(dst, "WEBP", quality=90)
-            elif target == "tiff":
-                im.save(dst, "TIFF")
+                frames[0].convert("RGB").save(dst, "JPEG", quality=92)
             elif target == "bmp":
-                im.convert("RGB").save(dst, "BMP")
+                frames[0].convert("RGB").save(dst, "BMP")
+            elif target == "png":
+                _save_frames([f.convert("RGBA") if f.mode == "P" else f for f in frames], dst, "PNG")
+            elif target == "webp":
+                _save_frames(
+                    [f.convert("RGBA") if f.mode == "P" else f for f in frames],
+                    dst,
+                    "WEBP",
+                    durations,
+                    loop,
+                    quality=90,
+                )
+            elif target == "tiff":
+                _save_frames(
+                    [f.convert("RGBA") if f.mode == "P" else f for f in frames],
+                    dst,
+                    "TIFF",
+                    durations,
+                    loop,
+                )
             elif target == "gif":
-                im.convert("RGB").save(dst, "GIF")
+                _save_frames(frames, dst, "GIF", durations, loop)
             made.append(dst)
         return made
 
@@ -239,6 +267,31 @@ def _load(path):
     return opened.copy(), opened
 
 
+def _frames_of(opened):
+    """Every frame plus its delay, so tools do not flatten animations."""
+    count = getattr(opened, "n_frames", 1)
+    if count <= 1:
+        return [opened.copy()], [opened.info.get("duration", 0)], opened.info.get("loop")
+    frames = []
+    durations = []
+    for index in range(count):
+        opened.seek(index)
+        frames.append(opened.copy())
+        durations.append(opened.info.get("duration", 0))
+    return frames, durations, opened.info.get("loop")
+
+
+def _save_frames(frames, dst, fmt, durations=None, loop=None, **params):
+    if len(frames) > 1:
+        params.setdefault("save_all", True)
+        params.setdefault("append_images", frames[1:])
+        if durations and any(durations):
+            params.setdefault("duration", durations)
+        if loop is not None:
+            params.setdefault("loop", loop)
+    _save(frames[0], dst, fmt, **params)
+
+
 def compress_image(paths, level=None):
     level = _level(level)
     made = []
@@ -248,17 +301,22 @@ def compress_image(paths, level=None):
         original = os.path.getsize(src)
         fmt = _fmt_of(src)
         im, opened = _load(src)
+        frames, durations, loop = _frames_of(opened)
         opened.close()
+
+        def save(**params):
+            _save_frames(frames, dst, fmt, durations, loop, **params)
+
         if fmt in LOSSY_FMTS:
             quality = int(round(92 - 64 * level))
             ratio = 0.90 - 0.55 * level
-            _save(im, dst, fmt, quality=quality, optimize=True)
+            save(quality=quality, optimize=True)
             while os.path.getsize(dst) > original * ratio and quality > 25:
                 quality -= 5
-                _save(im, dst, fmt, quality=quality, optimize=True)
+                save(quality=quality, optimize=True)
         elif fmt in ("PNG", "APNG"):
-            _save(im, dst, fmt, optimize=True)
-            if level >= 0.5 or os.path.getsize(dst) >= original:
+            save(optimize=True)
+            if len(frames) == 1 and (level >= 0.5 or os.path.getsize(dst) >= original):
                 try:
                     colors = max(32, int(round(256 - 200 * level)))
                     if im.mode in ("RGBA", "LA", "P"):
@@ -270,9 +328,9 @@ def compress_image(paths, level=None):
                 except Exception:
                     pass
         elif fmt == "TIFF":
-            _save(im, dst, fmt, compression="tiff_lzw")
+            save(compression="tiff_lzw")
         else:
-            _save(im, dst, fmt, optimize=True)
+            save(optimize=True)
         made.append(dst)
     return made
 
@@ -284,11 +342,16 @@ def resize_image(paths):
         dst = output_path(src, "-small" + ext)
         fmt = _fmt_of(src)
         im, opened = _load(src)
+        frames, durations, loop = _frames_of(opened)
         opened.close()
-        small = im.resize(
-            (max(1, im.width // 2), max(1, im.height // 2)), Image.LANCZOS
-        )
-        _save(small, dst, fmt)
+        small = [
+            frame.resize(
+                (max(1, frame.width // 2), max(1, frame.height // 2)),
+                Image.LANCZOS,
+            )
+            for frame in frames
+        ]
+        _save_frames(small, dst, fmt, durations, loop)
         made.append(dst)
     return made
 
@@ -300,8 +363,10 @@ def rotate_image(paths):
         dst = output_path(src, "-rotated" + ext)
         fmt = _fmt_of(src)
         im, opened = _load(src)
+        frames, durations, loop = _frames_of(opened)
         opened.close()
-        _save(im.rotate(90, expand=True), dst, fmt)
+        rotated = [frame.rotate(90, expand=True) for frame in frames]
+        _save_frames(rotated, dst, fmt, durations, loop)
         made.append(dst)
     return made
 
@@ -313,35 +378,40 @@ def strip_meta(paths):
         dst = output_path(src, "-clean" + ext)
         fmt = _fmt_of(src)
         im, opened = _load(src)
+        frames, durations, loop = _frames_of(opened)
         keep = {
             key: value
             for key, value in opened.info.items()
             if key in ("transparency", "duration", "loop", "background", "disposal")
         }
         opened.close()
-        clean = Image.new(im.mode, im.size)
-        if im.mode == "P":
-            clean.putpalette(im.getpalette())
-        clean.paste(im)
-        clean.info = keep
+        clean = []
+        for frame in frames:
+            stripped = Image.new(frame.mode, frame.size)
+            if frame.mode == "P":
+                stripped.putpalette(frame.getpalette())
+            stripped.paste(frame)
+            stripped.info = keep
+            clean.append(stripped)
         if fmt in LOSSY_FMTS:
-            _save(clean, dst, fmt, quality=95)
+            _save_frames(clean, dst, fmt, durations, loop, quality=95)
         elif fmt in ("PNG", "APNG"):
-            _save(clean, dst, fmt, optimize=True)
+            _save_frames(clean, dst, fmt, durations, loop, optimize=True)
         else:
-            _save(clean, dst, fmt)
+            _save_frames(clean, dst, fmt, durations, loop)
         made.append(dst)
     return made
 
 
 def make_archive(paths, kind):
-    first = os.path.splitext(os.path.basename(paths[0]))[0]
+    first_path = os.path.normpath(paths[0])
+    first = os.path.splitext(os.path.basename(first_path))[0] or "archive"
     if len(paths) == 1:
         name = first
     else:
         name = first + "-files"
     ext = ".zip" if kind == "zip" else ".tar.gz"
-    folder = os.path.dirname(paths[0]) or "."
+    folder = os.path.dirname(first_path) or "."
     base = os.path.join(folder, name)
     candidate = base + ext
     counter = 2
@@ -352,7 +422,7 @@ def make_archive(paths, kind):
     used = set()
 
     def arcname(path):
-        name = os.path.basename(path)
+        name = os.path.basename(os.path.normpath(path))
         stem, suffix = os.path.splitext(name)
         candidate_name = name
         n = 2
@@ -401,6 +471,7 @@ def copy_path(paths):
 def duplicate_file(paths):
     made = []
     for src in paths:
+        src = os.path.normpath(src)
         name = os.path.basename(src)
         folder = os.path.dirname(src) or "."
         dst = os.path.join(folder, "copy of " + name)
@@ -408,7 +479,10 @@ def duplicate_file(paths):
         while os.path.exists(dst):
             dst = os.path.join(folder, "copy (%d) of %s" % (counter, name))
             counter += 1
-        shutil.copy2(src, dst)
+        if os.path.isdir(src):
+            shutil.copytree(src, dst)
+        else:
+            shutil.copy2(src, dst)
         made.append(dst)
     return made
 
@@ -420,13 +494,21 @@ def open_file(paths):
 
 
 def open_terminal(paths):
-    folder = os.path.dirname(paths[0]) if paths else os.path.expanduser("~")
+    if paths:
+        target = os.path.normpath(paths[0])
+        folder = target if os.path.isdir(target) else (os.path.dirname(target) or ".")
+    else:
+        folder = os.path.expanduser("~")
     subprocess.Popen(["x-terminal-emulator", "--working-directory", folder])
     return []
 
 
 def reveal_file(paths):
-    folder = os.path.dirname(paths[0]) if paths else os.path.expanduser("~")
+    if paths:
+        target = os.path.normpath(paths[0])
+        folder = target if os.path.isdir(target) else (os.path.dirname(target) or ".")
+    else:
+        folder = os.path.expanduser("~")
     subprocess.Popen(["xdg-open", folder], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return []
 
@@ -584,11 +666,11 @@ def ops_for(kind, paths=None):
         if applicable:
             found = applicable
         if kind == "convert":
-            exts = set(exts_of(paths))
+            exts = {_canonical_ext(ext) for ext in exts_of(paths)}
             found = [
                 o
                 for o in found
-                if ("." + o["label"].lower()) not in exts
+                if _canonical_ext("." + o["label"].lower()) not in exts
                 or o["label"] in ("ZIP", "TGZ")
             ]
     seen = set()
