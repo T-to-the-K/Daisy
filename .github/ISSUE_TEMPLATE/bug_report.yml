@@ -1,0 +1,46 @@
+name: Bug report
+description: Something isn't working as expected
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. The more detail, the faster it gets fixed.
+  - type: input
+    id: distro
+    attributes:
+      label: Distro / release
+      placeholder: e.g. Ubuntu 24.04
+    validations:
+      required: true
+  - type: dropdown
+    id: session
+    attributes:
+      label: X11 or Wayland?
+      description: Run `echo $XDG_SESSION_TYPE` to check.
+      options:
+        - X11
+        - Wayland
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: "1. ...\n2. ...\n3. ..."
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected vs actual behaviour
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log output
+      description: Paste the relevant lines from `/tmp/filewheel.log` (trim private paths).
+      render: shell

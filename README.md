@@ -1,11 +1,23 @@
 # Daisy
 
-A radial file conversion wheel for Linux.
+![Demo](docs/demo.gif)
+
+**A radial file-conversion wheel for Linux — drag a file, tap a key, and drop it on the format you want.**
+
+[![CI](https://github.com/T-to-the-K/Daisy/actions/workflows/ci.yml/badge.svg)](https://github.com/T-to-the-K/Daisy/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 Drag a file, tap a modifier key, and a wheel of format options appears at the
 pointer. Drop the file on a format to convert it. The converted file is written
 beside the original with the new extension, and the original is never
 overwritten.
+
+## Demo
+
+It's a desktop app, so there is no hosted web demo — the GIF above shows the
+core loop. To try it live, use the one-shot installer below, or grab the latest
+binary release from the [Releases](https://github.com/T-to-the-K/Daisy/releases)
+page.
 
 ## Install (Linux, one shot)
 
@@ -48,3 +60,12 @@ the wheel.
 Keys: Shift shows convert options, Ctrl shows tool options, Alt shows action
 options. Only formats that make sense for the dragged file are shown, and the
 format the file already is never appears.
+
+## Contributing
+
+Bug reports, feature ideas, and pull requests are welcome — see
+[CONTRIBUTING.md](CONTRIBUTING.md).
+
+## License
+
+[MIT](LICENSE) © 2026 Muhammad Talha Khattak

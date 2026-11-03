@@ -1,0 +1,32 @@
+name: Feature request
+description: Suggest an idea for Daisy
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: A clear description of the pain point.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: Proposed feature
+      description: What should Daisy do, and how would you expect to trigger it?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Any other ways you've tried to get this done.
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope
+      description: Confirm this fits Daisy's lightweight ethos.
+      options:
+        - label: This stays a simple file tool (no big new dependencies)
+          required: true

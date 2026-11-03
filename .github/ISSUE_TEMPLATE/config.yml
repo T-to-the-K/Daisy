@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 💬 Discussions
+    url: https://github.com/T-to-the-K/Daisy/discussions
+    about: Ask questions, share tips, or talk about ideas here.
+  - name: 📖 README
+    url: https://github.com/T-to-the-K/Daisy#readme
+    about: Setup and usage instructions live in the README.
