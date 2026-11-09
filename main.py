@@ -72,6 +72,11 @@ class FileWheel:
                 self.wheel.slider_set(x, y)
             elif self.wheel.get_visible():
                 self.wheel.ring_hover(x, y)
+                if not self.wheel.dial_active:
+                    index = self.wheel.wedge_at(x, y)
+                    if index != self.wheel.hover:
+                        self.wheel.hover = index
+                        self.wheel.queue_draw()
             if self.button_down and not self.dragging and not self.slider_live:
                 dx = x - self.press_at[0]
                 dy = y - self.press_at[1]

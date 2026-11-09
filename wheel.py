@@ -99,6 +99,9 @@ class WheelWindow(Gtk.Window):
         y = center[1] - SIZE // 2
         self.move(x, y)
         self.show_all()
+        win = self.get_window()
+        if win is not None:
+            win.raise_()
         self._start_anim()
         self.queue_draw()
 
@@ -188,7 +191,20 @@ class WheelWindow(Gtk.Window):
         return True
 
     def wedge_at(self, px, py):
-        return self._wedge_for(px, py)
+        wx, wy = self._to_widget(px, py)
+        return self._wedge_for(wx, wy)
+
+    def _to_widget(self, px, py):
+        """Convert screen coordinates to coordinates inside this window."""
+        win = self.get_window()
+        if win is not None:
+            try:
+                ok, ox, oy = win.get_origin()
+                if ok:
+                    return px - ox, py - oy
+            except Exception:
+                pass
+        return px - (self.center[0] - SIZE // 2), py - (self.center[1] - SIZE // 2)
 
     def _reset_dial(self):
         self.mode = "pick"
@@ -215,12 +231,14 @@ class WheelWindow(Gtk.Window):
     def slider_hit(self, px, py):
         if not self.dial_active:
             return False
-        cx, cy = self.center
+        px, py = self._to_widget(px, py)
+        cx, cy = SIZE / 2.0, SIZE / 2.0
         dist = math.hypot(px - cx, py - cy)
         return abs(dist - R_DIAL) <= 13
 
     def slider_set(self, px, py):
-        cx, cy = self.center
+        px, py = self._to_widget(px, py)
+        cx, cy = SIZE / 2.0, SIZE / 2.0
         angle = math.atan2(py - cy, px - cx)
         t = ((angle - RING_START) % (2 * math.pi)) / RING_SWEEP
         self.compression = max(0.0, min(1.0, t))
@@ -247,10 +265,10 @@ class WheelWindow(Gtk.Window):
     def _wedge_for(self, px, py):
         if not self.entries:
             return -1
-        cx, cy = self.center
+        cx, cy = SIZE / 2.0, SIZE / 2.0
         dx, dy = px - cx, py - cy
         dist = math.hypot(dx, dy)
-        if dist < R_INNER * 0.55 or dist > R_OUTER + 20:
+        if dist < R_INNER * 0.55 or dist > R_OUTER + 26:
             return -1
         angle = math.degrees(math.atan2(dy, dx)) % 360
         step = 360.0 / len(self.entries)
@@ -259,10 +277,8 @@ class WheelWindow(Gtk.Window):
         return index if 0 <= index < len(self.entries) else -1
 
     def _drag_motion(self, widget, context, x, y, time):
-        px = self.center[0] - SIZE // 2 + x
-        py = self.center[1] - SIZE // 2 + y
-        self.pointer = (px, py)
-        index = self._wedge_for(px, py)
+        self.pointer = (self.center[0] - SIZE // 2 + x, self.center[1] - SIZE // 2 + y)
+        index = self._wedge_for(x, y)
         if index != self.hover:
             self.hover = index
             self.queue_draw()
@@ -275,6 +291,10 @@ class WheelWindow(Gtk.Window):
 
     def _drag_drop(self, widget, context, x, y, time):
         self.dropping = True
+        index = self._wedge_for(x, y)
+        if index >= 0:
+            self.hover = index
+            self.queue_draw()
         if self.paths is None:
             target = Gdk.Atom.intern("text/uri-list", False)
             self.drag_get_data(context, target, time)
