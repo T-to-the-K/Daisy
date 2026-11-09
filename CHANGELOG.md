@@ -7,7 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-11-09
+
 ### Fixed
+- Drops are accepted anywhere on a highlighted format slice, not just near its inner edge.
 - Same-format aliases (`.jpeg`, `.tif`, `.apng`) are no longer offered as conversion targets.
 - Archiving or duplicating a folder with a trailing slash no longer creates a hidden `.zip` or an empty copy name.
 - Duplicating a folder now copies its contents instead of failing.
